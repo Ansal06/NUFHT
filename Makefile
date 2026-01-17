@@ -1,8 +1,20 @@
 CC = clang
-CFLAGS = -O3 -Xclang -fopenmp -fvectorize -march=native -I./src -I/Users/kamion/SCIENCE/FINUFFT/finufft/include -I/opt/homebrew/Cellar/gsl/2.8/include
-LDFLAGS = -L/Users/kamion/SCIENCE/FINUFFT/finufft/lib -lfinufft -lm -L/opt/homebrew/opt/fftw/lib -lfftw3 -L/opt/homebrew/Cellar/gsl/2.8/lib -lgsl -lgslcblas -L/opt/homebrew/opt/libomp/lib -lomp
 
-SRC = src/axifresnel_jan13.c src/fast_hankel_nufht.c src/expansions.c src/bounds.c
+FINUFFT_INC ?= /Users/kamion/SCIENCE/FINUFFT/finufft/include
+FINUFFT_LIBDIR ?= /Users/kamion/SCIENCE/FINUFFT/finufft/lib
+GSL_INC ?= /opt/homebrew/Cellar/gsl/2.8/include
+GSL_LIBDIR ?= /opt/homebrew/Cellar/gsl/2.8/lib
+FFTW_LIBDIR ?= /opt/homebrew/opt/fftw/lib
+OMP_LIBDIR ?= /opt/homebrew/opt/libomp/lib
+
+CFLAGS = -O3 -Xclang -fopenmp -fvectorize -march=native \
+		 -I./src -I$(FINUFFT_INC) -I$(GSL_INC)
+LDFLAGS = -L$(FINUFFT_LIBDIR) -lfinufft -lm \
+		  -L$(FFTW_LIBDIR) -lfftw3 \
+		  -L$(GSL_LIBDIR) -lgsl -lgslcblas \
+		  -L$(OMP_LIBDIR) -lomp
+
+SRC = src/axifresnel.c src/fast_hankel_nufht.c src/expansions.c src/bounds.c
 OBJ = $(SRC:.c=.o)
 EXEC = axifresnel
 

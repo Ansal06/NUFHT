@@ -181,14 +181,6 @@ void add_dir(double *gs, double nu,
              const double *ws,
              int m, int n);
 
-/** \brief Batched direct summation over Bessel evaluations. */
-void add_dir_batch(double *gs, double nu,
-                   const double *rs, const double *cs,
-                   const double *ws,
-                   int m, int n,
-                   int batch,
-                   int ld_cs, int ld_gs);
-
 /** \brief Asymptotic expansion accelerated via NUFFT (large arguments). */
 void add_asy(double *gs, double nu,
              const double *rs, const double *cs,
@@ -202,19 +194,6 @@ void add_asy(double *gs, double nu,
              double *in_buffer,
              double *out_buffer);
 
-/** \brief Batched asymptotic expansion accelerated via FINUFFT many. */
-void add_asy_batch(double *gs, double nu,
-                   const double *rs, const double *cs,
-                   const double *ws,
-                   int m, int n,
-                   int K,
-                   double tol,
-                   const double *asy_coef,
-                   int batch,
-                   int ld_cs, int ld_gs,
-                   double *in_buffer,
-                   double *out_buffer);
-
 /** \brief Local (Wimp) expansion with Chebyshev acceleration (integer nu). */
 void add_loc(double *gs, double nu,
              const double *rs, const double *cs,
@@ -224,18 +203,6 @@ void add_loc(double *gs, double nu,
              double *cheb_buffer,
              double *bessel_buffer_1,
              double *bessel_buffer_2);
-
-/** \brief Batched local Wimp expansion. */
-void add_loc_batch(double *gs, double nu,
-                   const double *rs, const double *cs,
-                   const double *ws,
-                   int m, int n,
-                   int K,
-                   int batch,
-                   int ld_cs, int ld_gs,
-                   double *cheb_buffer_batch,
-                   double *bessel_buffer_1,
-                   double *bessel_buffer_2);
 
 
 

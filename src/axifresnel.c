@@ -102,7 +102,7 @@ int main(void)
     int n_y = 150;    /* number of y values */   //  set this to >=150; code is slower at smaller n_y
 
     double w_min = 0.1, w_max = 100.0;    /* frequency grid */
-    double y_min = 0.0, y_max = 5.0;    /* spatial grid */
+    double y_min = 0.0, y_max = 1.0;    /* spatial grid */
 
     /* Allocate grids */
     double *w_grid = malloc((size_t)n_w * sizeof(double));
@@ -191,13 +191,17 @@ int main(void)
         
         /* Select GL set based on w */
         int n_gl = select_n_gl(w);
-        int gl_idx = (n_gl / 1000) - 1;  /* Maps 1000->0, 2000->1, ..., 10000->9 */
         
+        double u_max = w * sqrt((double)n_gl/(2.0*w));   //  R = sqrt(n_gl /(2w)),
+        //  double u_max = w * sqrt(1000.0/(2.0*w));   //  THIS TEST GAVE CRAP RESULTS
+
+        int gl_idx = (n_gl / 1000) - 1;  /* Maps 1000->0, 2000->1, ..., 10000->9 */
+
+        //        gl_idx = 0;  TEMPORARY OVERRIDE TO USE gl1000 ONLY---this gave bad results at w>75
         double *gl_absc = gl_sets[gl_idx].absc;
         double *gl_wght = gl_sets[gl_idx].wght;
         n_gl = gl_sets[gl_idx].n_gl;  /* Use actual loaded count */
-        
-        double u_max = w * sqrt((double)n_gl/(2.0*w));   //  R = sqrt(n_gl /(2w)),
+//        n_gl = 1000;  // TEMPORARY OVERRIDE TO USE 1000 POINTS ONLY --- this gave bad results at w>75
 
         /* Allocate per-thread GL arrays and rescale for this w */
         double *u_j = malloc((size_t)n_gl * sizeof(double));

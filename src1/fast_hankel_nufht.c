@@ -873,72 +873,6 @@ static void execute_boxes_single(const NufhtPlan *plan,
     }
 }
 
-static void execute_boxes_batch(const NufhtPlan *plan,
-                                const double *cs, int ld_cs,
-                                double *gs, int ld_gs,
-                                int batch,
-                                NufhtScratch *scratch,
-                                double *cheb_batch,
-                                double *asy_in,
-                                double *asy_out)
-{
-    double absnu = fabs(plan->nu);
-    int Kloc = plan->K_loc;
-    int Kasy = plan->K_asy;
-
-#define FOR_EACH_BOX(BV, BODY)                                      \
-    do {                                                            \
-        for (size_t bi = 0; bi < (BV).length; ++bi) {               \
-            Box b = (BV).data[bi];                                  \
-            int i0b = b.i0, i1b = b.i1;                             \
-            int j0b = b.j0, j1b = b.j1;                             \
-            int ni = i1b - i0b + 1;                                 \
-            int nj = j1b - j0b + 1;                                 \
-            BODY;                                                   \
-        }                                                           \
-    } while (0)
-
-    if (Kloc >= 0) {
-        FOR_EACH_BOX(plan->boxes.loc, {
-            add_loc_batch(&gs[i0b], absnu,
-                          &plan->rs[j0b], &cs[j0b],
-                          &plan->ws[i0b],
-                          nj, ni,
-                          Kloc,
-                          batch,
-                          ld_cs, ld_gs,
-                          cheb_batch,
-                          scratch->bessel_buffer_1,
-                          scratch->bessel_buffer_2);
-        });
-    }
-
-    FOR_EACH_BOX(plan->boxes.asy, {
-        add_asy_batch(&gs[i0b], absnu,
-                      &plan->rs[j0b], &cs[j0b],
-                      &plan->ws[i0b],
-                      nj, ni,
-                      Kasy,
-                      plan->tol,
-                      plan->asy_coef,
-                      batch,
-                      ld_cs, ld_gs,
-                      asy_in,
-                      asy_out);
-    });
-
-    FOR_EACH_BOX(plan->boxes.dir, {
-        add_dir_batch(&gs[i0b], absnu,
-                      &plan->rs[j0b], &cs[j0b],
-                      &plan->ws[i0b],
-                      nj, ni,
-                      batch,
-                      ld_cs, ld_gs);
-    });
-
-#undef FOR_EACH_BOX
-}
-
 int nufht_batch(const NufhtPlan *plan,
                 const double *cs, int ld_cs,
                 double *gs, int ld_gs,
@@ -963,94 +897,30 @@ int nufht_batch(const NufhtPlan *plan,
     int use_direct = (dim_prod < (long long)plan->min_dim_prod);
     int nu_is_int = is_integer_double(plan->nu);
 
-    int need_asy = (!use_direct) && (!nu_is_int || plan->boxes.asy.length > 0);
-    int need_loc = (!use_direct) && (nu_is_int && plan->boxes.loc.length > 0) && (plan->K_loc >= 0);
-
-    double *asy_in = scratch->in_buffer;
-    double *asy_out = scratch->out_buffer;
-    double *cheb_batch = scratch->cheb_buffer;
-    int owns_batch_buffers = 0;
-
-    if (batch > 1 && (need_asy || need_loc)) {
-        size_t in_len = (size_t)plan->m * (size_t)batch * 2;
-        size_t out_len = (size_t)plan->n * (size_t)batch * 2;
-        size_t cheb_len = need_loc ? (size_t)(plan->K_loc + 1) * (size_t)batch : 0;
-
-        asy_in = need_asy ? (double *)calloc(in_len, sizeof(double)) : NULL;
-        asy_out = need_asy ? (double *)calloc(out_len, sizeof(double)) : NULL;
-        cheb_batch = need_loc ? (double *)calloc(cheb_len, sizeof(double)) : NULL;
-
-        if ((need_asy && (!asy_in || !asy_out)) || (need_loc && !cheb_batch)) {
-            fprintf(stderr, "nufht_batch: batch buffer alloc failed\n");
-            free(asy_in);
-            free(asy_out);
-            free(cheb_batch);
-            if (owns_scratch) {
-                nufht_scratch_free(scratch);
-            }
-            return -403;
-        }
-        owns_batch_buffers = 1;
-    }
-
     for (int t = 0; t < batch; ++t) {
         double *gs_t = gs + (size_t)t * (size_t)ld_gs;
+        const double *cs_t = cs + (size_t)t * (size_t)ld_cs;
         memset(gs_t, 0, (size_t)plan->n * sizeof(double));
-    }
 
-    if (use_direct) {
-        add_dir_batch(gs, plan->nu, plan->rs, cs, plan->ws,
-                      plan->m, plan->n,
-                      batch, ld_cs, ld_gs);
-    } else if (!nu_is_int) {
-        if (batch > 1 && need_asy) {
-            add_asy_batch(gs, fabs(plan->nu),
-                          plan->rs, cs, plan->ws,
-                          plan->m, plan->n,
-                          plan->K_asy,
-                          plan->tol,
-                          plan->asy_coef,
-                          batch,
-                          ld_cs, ld_gs,
-                          asy_in, asy_out);
-        } else {
-            for (int t = 0; t < batch; ++t) {
-                double *gs_t = gs + (size_t)t * (size_t)ld_gs;
-                const double *cs_t = cs + (size_t)t * (size_t)ld_cs;
-                add_asy(gs_t, fabs(plan->nu),
-                        plan->rs, cs_t, plan->ws,
-                        plan->m, plan->n,
-                        plan->K_asy,
-                        plan->tol,
-                        plan->asy_coef,
-                        scratch->real_buffer_1,
-                        scratch->real_buffer_2,
-                        scratch->in_buffer,
-                        scratch->out_buffer);
+        if (use_direct) {
+            add_dir(gs_t, plan->nu, plan->rs, cs_t, plan->ws, plan->m, plan->n);
+        } else if (!nu_is_int) {
+            add_asy(gs_t, fabs(plan->nu),
+                    plan->rs, cs_t, plan->ws,
+                    plan->m, plan->n,
+                    plan->K_asy,
+                    plan->tol,
+                    plan->asy_coef,
+                    scratch->real_buffer_1,
+                    scratch->real_buffer_2,
+                    scratch->in_buffer,
+                    scratch->out_buffer);
+            if (plan->nu < 0.0 && is_odd_integer_double(plan->nu)) {
+                for (int i = 0; i < plan->n; ++i) gs_t[i] = -gs_t[i];
             }
-        }
-    } else {
-        if (batch > 1) {
-            execute_boxes_batch(plan, cs, ld_cs, gs, ld_gs, batch, scratch,
-                                need_loc ? cheb_batch : scratch->cheb_buffer,
-                                need_asy ? asy_in : scratch->in_buffer,
-                                need_asy ? asy_out : scratch->out_buffer);
         } else {
-            execute_boxes_single(plan, cs, gs, scratch);
+            execute_boxes_single(plan, cs_t, gs_t, scratch);
         }
-    }
-
-    if (plan->nu < 0.0 && is_odd_integer_double(plan->nu)) {
-        for (int t = 0; t < batch; ++t) {
-            double *gs_t = gs + (size_t)t * (size_t)ld_gs;
-            for (int i = 0; i < plan->n; ++i) gs_t[i] = -gs_t[i];
-        }
-    }
-
-    if (owns_batch_buffers) {
-        free(asy_in);
-        free(asy_out);
-        free(cheb_batch);
     }
 
     if (owns_scratch) {
