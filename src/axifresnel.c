@@ -58,10 +58,18 @@ static void rescale_gl_points(double *absc, double *wght, int n,
  *  c_j(w) = ξ_j u_j exp{ i u_j² / (2w) [e^{-i w ψ(u_j/w)} - 1] }
  * xi_j is the weight associated with u_j
  */
-static double complex compute_cj(double w, double u_j, double xi_j,double Rmax)
+static double complex compute_cj(double w, double u_j, double xi_j,
+                                 double u_max_w)
 {
+    if (u_max_w <= 0.0) return 0.0;
+    /* Smoothly taper contributions beyond the per-w cutoff */
+    double du = 0.02 * u_max_w;
+    if (du <= 0.0) du = 1e-12;
+    double window_u = 0.5 * (1.0 - tanh((u_j - u_max_w) / du));
+
     double x = u_j / w;
-    double arg = x - 0.75*Rmax;
+    double Rmax = u_max_w / w;
+    double arg = x - 0.75 * Rmax;
     double numerator = 0.5 * (1.0 - tanh(arg));   // windowing for potential
     double xc= 0.05;
     double psi_x = sqrt(x*x + xc*xc) + xc * log((2.0*xc/(sqrt(x*x+xc*xc)+xc)));  // cored isothermal sphere from 2210.05658 Tambalo et al.
@@ -74,7 +82,7 @@ static double complex compute_cj(double w, double u_j, double xi_j,double Rmax)
     double complex phaseA  = cexp(I * (u_j * u_j) / (2.0 * w));   // exp(i u^2 / 2w)
     double complex phasePsi = cexp(-I * w * psi_x);              // exp(-i w ψ)
     // Correct coefficient
-    return xi_j * u_j * phaseA * (phasePsi - 1.0);
+    return window_u * xi_j * u_j * phaseA * (phasePsi - 1.0);
 }
 
 /**
@@ -166,8 +174,7 @@ int main(void)
     NufhtOptions opt_plan = nufht_default_options();
     opt_plan.tol = 1.0e-8;
 
-    /* Buffer to collect all output lines from all threads */
-    /* Allocate enough for 48 w x 100 y lines */
+    /* Buffer to collect all output lines (indexed by iw*n_y + iy) */
     typedef struct {
         double w, y, re, im;
     } OutputLine;
@@ -177,119 +184,113 @@ int main(void)
         fclose(out);
         return 1;
     }
-    
     int output_count = 0;
 
-    /* Parallel region: each thread creates its own plan and executes batch */
-    /* Using #pragma omp parallel (structured block) like test_nufht.c */
-    #pragma omp parallel num_threads(12)
-    {
-    #pragma omp for collapse(1)
-    for (int iw = 0; iw < n_w; ++iw) {
-        fprintf(stderr, "Thread starting iw=%d\n", iw);
-        double w = w_grid[iw];
-        
-        /* Select GL set based on w */
-        int n_gl = select_n_gl(w);
-        
-        double u_max = w * sqrt((double)n_gl/(2.0*w));   //  R = sqrt(n_gl /(2w)),
-        //  double u_max = w * sqrt(1000.0/(2.0*w));   //  THIS TEST GAVE CRAP RESULTS
+    /* Process in groups by n_gl, using shared u_j grid per group */
+    #pragma omp parallel for schedule(dynamic, 1) num_threads(10)
+    for (int gi = 0; gi < 10; ++gi) {
+        if (error_flag) continue;
+        int n_gl = gl_sizes[gi];
+        int gl_idx = gi;
 
-        int gl_idx = (n_gl / 1000) - 1;  /* Maps 1000->0, 2000->1, ..., 10000->9 */
+        /* Count how many w fall in this n_gl bin */
+        int group_count = 0;
+        for (int iw = 0; iw < n_w; ++iw) {
+            if (select_n_gl(w_grid[iw]) == n_gl) {
+                group_count++;
+            }
+        }
+        if (group_count == 0) continue;
 
-        //        gl_idx = 0;  TEMPORARY OVERRIDE TO USE gl1000 ONLY---this gave bad results at w>75
+        /* Max w in this bin -> common u_max to share u_j grid */
+        double w_max_group = 0.0;
+        for (int iw = 0; iw < n_w; ++iw) {
+            double w = w_grid[iw];
+            if (select_n_gl(w) == n_gl && w > w_max_group) {
+                w_max_group = w;
+            }
+        }
+        double u_max = w_max_group * sqrt((double)n_gl / (2.0 * w_max_group));
+
         double *gl_absc = gl_sets[gl_idx].absc;
         double *gl_wght = gl_sets[gl_idx].wght;
-        n_gl = gl_sets[gl_idx].n_gl;  /* Use actual loaded count */
-//        n_gl = 1000;  // TEMPORARY OVERRIDE TO USE 1000 POINTS ONLY --- this gave bad results at w>75
+        n_gl = gl_sets[gl_idx].n_gl;
 
-        /* Allocate per-thread GL arrays and rescale for this w */
         double *u_j = malloc((size_t)n_gl * sizeof(double));
         double *xi_j = malloc((size_t)n_gl * sizeof(double));
         if (!u_j || !xi_j) {
             fprintf(stderr, "allocation failed\n");
-            error_flag = 1;
+            #pragma omp critical
+            { error_flag = 1; }
+            free(u_j);
+            free(xi_j);
             continue;
         }
 
-        /* Copy and rescale GL points for this w */
         memcpy(u_j, gl_absc, (size_t)n_gl * sizeof(double));
         memcpy(xi_j, gl_wght, (size_t)n_gl * sizeof(double));
         rescale_gl_points(u_j, xi_j, n_gl, u_max);
 
-        /* Compute coefficients c_j(w) for this w and pack for batch (real, imag) */
-        double *cs_batch = malloc((size_t)n_gl * 2 * sizeof(double));
-        if (!cs_batch) {
-            fprintf(stderr, "cs_batch allocation failed\n");
+        /* Batch size = 2 * group_count (real+imag for each w in group) */
+        int batch = 2 * group_count;
+        double *cs_batch = malloc((size_t)n_gl * (size_t)batch * sizeof(double));
+        double *gs_batch = malloc((size_t)n_y * (size_t)batch * sizeof(double));
+        if (!cs_batch || !gs_batch) {
+            fprintf(stderr, "batch allocation failed\n");
             free(u_j);
             free(xi_j);
-            error_flag = 1;
+            free(cs_batch);
+            free(gs_batch);
+            #pragma omp critical
+            { error_flag = 1; }
             continue;
         }
 
-        for (int j = 0; j < n_gl; ++j) {
-            double complex cj = compute_cj(w, u_j[j], xi_j[j],u_max/w);
-            cs_batch[j] = creal(cj);                 /* column 0 */
-            cs_batch[n_gl + j] = cimag(cj);          /* column 1 */
+        /* Pack coefficients for each w in the group */
+        int t = 0;
+        for (int iw = 0; iw < n_w; ++iw) {
+            double w = w_grid[iw];
+            if (select_n_gl(w) != n_gl) continue;
+
+            double u_max_w = w * sqrt((double)n_gl / (2.0 * w));
+
+            for (int j = 0; j < n_gl; ++j) {
+                double complex cj = compute_cj(w, u_j[j], xi_j[j], u_max_w);
+                cs_batch[(size_t)t * (size_t)n_gl + (size_t)j] = creal(cj);
+                cs_batch[(size_t)(t + 1) * (size_t)n_gl + (size_t)j] = cimag(cj);
+            }
+            t += 2;
         }
 
-     
-        fprintf(stderr, "Processing w=%d/%d (w=%.6e)...\n", iw+1, n_w, w);
-     
+        memset(gs_batch, 0, (size_t)n_y * (size_t)batch * sizeof(double));
 
-        /* Each thread creates its own plan and scratch - thread-safe pattern */
         NufhtPlan local_plan;
         NufhtScratch scratch;
-
-        fprintf(stderr, "iw=%d: About to call nufht_plan_init with u_j=%p, n_gl=%d, y_grid=%p, n_y=%d\n", 
-                iw, (void*)u_j, n_gl, (void*)y_grid, n_y);
-
         if (nufht_plan_init(&local_plan, 0.0, u_j, n_gl, y_grid, n_y, &opt_plan) != 0) {
-            fprintf(stderr, "[Thread %d] plan_init failed for w=%.6e\n", omp_get_thread_num(), w);
+            fprintf(stderr, "plan_init failed for n_gl=%d\n", n_gl);
             free(u_j);
             free(xi_j);
             free(cs_batch);
+            free(gs_batch);
             #pragma omp critical
-            {
-                error_flag = 1;
-            }
+            { error_flag = 1; }
             continue;
         }
-
         if (nufht_scratch_init(&scratch, &local_plan) != 0) {
-            fprintf(stderr, "[Thread %d] scratch_init failed for w=%.6e\n", omp_get_thread_num(), w);
+            fprintf(stderr, "scratch_init failed for n_gl=%d\n", n_gl);
             nufht_plan_free(&local_plan);
             free(u_j);
             free(xi_j);
             free(cs_batch);
+            free(gs_batch);
             #pragma omp critical
-            {
-                error_flag = 1;
-            }
+            { error_flag = 1; }
             continue;
         }
 
-        /* Allocate output buffers for batch=2 (real and imaginary) */
-        double *gs_batch = malloc((size_t)n_y * 2 * sizeof(double));
-        if (!gs_batch) {
-            fprintf(stderr, "[Thread %d] output buffer allocation failed\n", omp_get_thread_num());
-            nufht_scratch_free(&scratch);
-            nufht_plan_free(&local_plan);
-            free(u_j);
-            free(xi_j);
-            free(cs_batch);
-            #pragma omp critical
-            {
-                error_flag = 1;
-            }
-            continue;
-        }
-        memset(gs_batch, 0, (size_t)n_y * 2 * sizeof(double));
-
-        /* Execute NUFHT for real and imaginary parts in one batch (batch=2) */
-        int ret_batch = nufht_batch(&local_plan, cs_batch, n_gl, gs_batch, n_y, 2, &scratch);
+        int ret_batch = nufht_batch(&local_plan, cs_batch, n_gl, gs_batch, n_y, batch, &scratch);
         if (ret_batch != 0) {
-            fprintf(stderr, "[Thread %d] nufht_batch(batch=2) failed for w=%.6e\n", omp_get_thread_num(), w);
+            fprintf(stderr, "nufht_batch failed for n_gl=%d\n", n_gl);
             nufht_scratch_free(&scratch);
             nufht_plan_free(&local_plan);
             free(u_j);
@@ -297,41 +298,39 @@ int main(void)
             free(cs_batch);
             free(gs_batch);
             #pragma omp critical
-            {
-                error_flag = 1;
-            }
+            { error_flag = 1; }
             continue;
         }
 
-        /* Combine results: F(w,y) = 1 + (e^{iwy²/2} / iw) * (G_re + i*G_im) */
-        for (int iy = 0; iy < n_y; ++iy) {
-            double y = y_grid[iy];
-            double complex prefac_y = cexp(I * w * y * y / 2.0) / (I * w);
-            double G_re = gs_batch[iy];
-            double G_im = gs_batch[n_y + iy];
-            double complex G_sum = G_re + I * G_im;
-            double complex F_y = 1.0 + prefac_y * G_sum;
-            
-            /* Store in thread-safe buffer position */
-            #pragma omp critical(buffer_write)
-            {
-                output_buffer[output_count].w = w;
-                output_buffer[output_count].y = y;
-                output_buffer[output_count].re = creal(F_y);
-                output_buffer[output_count].im = cimag(F_y);
-                output_count++;
+        /* Unpack results into output_buffer */
+        t = 0;
+        for (int iw = 0; iw < n_w; ++iw) {
+            double w = w_grid[iw];
+            if (select_n_gl(w) != n_gl) continue;
+            for (int iy = 0; iy < n_y; ++iy) {
+                double y = y_grid[iy];
+                double complex prefac_y = cexp(I * w * y * y / 2.0) / (I * w);
+                double G_re = gs_batch[(size_t)t * (size_t)n_y + (size_t)iy];
+                double G_im = gs_batch[(size_t)(t + 1) * (size_t)n_y + (size_t)iy];
+                double complex G_sum = G_re + I * G_im;
+                double complex F_y = 1.0 + prefac_y * G_sum;
+
+                size_t out_idx = (size_t)iw * (size_t)n_y + (size_t)iy;
+                output_buffer[out_idx].w = w;
+                output_buffer[out_idx].y = y;
+                output_buffer[out_idx].re = creal(F_y);
+                output_buffer[out_idx].im = cimag(F_y);
             }
+            t += 2;
         }
 
-        /* Cleanup for this thread's iteration */
         nufht_scratch_free(&scratch);
         nufht_plan_free(&local_plan);
         free(u_j);
         free(xi_j);
         free(cs_batch);
         free(gs_batch);
-    }  /* end for loop */
-    }  /* end parallel region */
+    }
 
     if (error_flag) {
         free(output_buffer);
@@ -340,11 +339,15 @@ int main(void)
     }
 
     /* Write all collected results to file */
-    printf("outputcount=%d\n",output_count);
-    for (int i = 0; i < output_count; ++i) {
-        fprintf(out, "  %12.6e  %12.6e  %+15.8e  %+15.8e\n",
-                output_buffer[i].w, output_buffer[i].y, 
-                output_buffer[i].re, output_buffer[i].im);
+    output_count = n_w * n_y;
+    printf("outputcount=%d\n", output_count);
+    for (int iw = 0; iw < n_w; ++iw) {
+        for (int iy = 0; iy < n_y; ++iy) {
+            size_t out_idx = (size_t)iw * (size_t)n_y + (size_t)iy;
+            fprintf(out, "  %12.6e  %12.6e  %+15.8e  %+15.8e\n",
+                    output_buffer[out_idx].w, output_buffer[out_idx].y,
+                    output_buffer[out_idx].re, output_buffer[out_idx].im);
+        }
     }
 
     fclose(out);
