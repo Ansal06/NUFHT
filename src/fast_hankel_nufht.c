@@ -15,6 +15,7 @@
 #include <assert.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <limits.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -102,12 +103,58 @@ static void ensure_tables(void) {
             char default_path[PATH_MAX];
             const char *cache_file = cache_env;
             if (!cache_file) {
-                if (get_default_cache_path(default_path, sizeof(default_path)) == 0) {
-                    cache_file = default_path;
+                /* Prefer a writable project data/ directory (cwd or parent) */
+                char cwd_path[PATH_MAX];
+                struct stat st;
+                if (getcwd(cwd_path, sizeof(cwd_path)) != NULL) {
+                    const char *fname = "data/nufht_tables.cache";
+
+                    /* Check cwd/data directory exists */
+                    char data_dir[PATH_MAX];
+                    size_t cwdlen = strlen(cwd_path);
+                    if (cwdlen + 1 + strlen("data") + 1 < sizeof(data_dir)) {
+                        memcpy(data_dir, cwd_path, cwdlen);
+                        data_dir[cwdlen] = '/';
+                        strcpy(data_dir + cwdlen + 1, "data");
+                        if (stat(data_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+                            if (cwdlen + 1 + strlen(fname) + 1 < sizeof(default_path)) {
+                                memcpy(default_path, cwd_path, cwdlen);
+                                default_path[cwdlen] = '/';
+                                strcpy(default_path + cwdlen + 1, fname);
+                                cache_file = default_path;
+                            }
+                        }
+                    }
+
+                    /* If cwd/data doesn't exist, try parent/data (project root) */
+                    if (!cache_file) {
+                        const char *slash = strrchr(cwd_path, '/');
+                        if (slash) {
+                            size_t parent_len = (size_t)(slash - cwd_path);
+                            if (parent_len + 1 + strlen("data") + 1 < sizeof(data_dir)) {
+                                memcpy(data_dir, cwd_path, parent_len);
+                                data_dir[parent_len] = '/';
+                                strcpy(data_dir + parent_len + 1, "data");
+                                if (stat(data_dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+                                    if (parent_len + 1 + strlen(fname) + 1 < sizeof(default_path)) {
+                                        memcpy(default_path, cwd_path, parent_len);
+                                        default_path[parent_len] = '/';
+                                        strcpy(default_path + parent_len + 1, fname);
+                                        cache_file = default_path;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                else {
-                    /* Fallback: current working directory */
-                    cache_file = "data/nufht_tables.cache";
+
+                /* Fallback to executable directory if cwd-based paths unavailable */
+                if (!cache_file) {
+                    if (get_default_cache_path(default_path, sizeof(default_path)) == 0) {
+                        cache_file = default_path;
+                    } else {
+                        cache_file = "data/nufht_tables.cache";
+                    }
                 }
             }
             int load_ok = (cache_file != NULL) && (load_tables(cache_file) == 0);

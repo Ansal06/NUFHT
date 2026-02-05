@@ -1,61 +1,115 @@
-# Fast Hankel Transform (NUFHT) - Fresnel Integral Evaluation
+# Batched NUFHT (C + Python)
 
 ## Overview
 
-This C code implements a Nonuniform Fast Hankel Transform (NUFHT) for the evaluation of Fresnel-type integrals F(w,y) on a w-y grid. The NUFHT algorithm is translated from Julia (FastTransforms.jl) to C, generalizing to a batch mode to allow several NUFHTs with the same grid to be evaluated simultaneously, and also to allow for parallel processing.
+This project provides a C implementation of a batched Nonuniform Fast Hankel Transform (NUFHT) and a Python wrapper for convenient use in notebooks and scripts. The core C library supports running multiple transforms at once for a shared $(r,k)$ grid, and the Python extension exposes the same batched API for fast experimentation.
+
+The NUFHT algorithm is from "A nonuniform fast Hankel transform," by Paul G. Beckman and Michael O'Neil [arXiv:2411.09583].  The C code is translated from their Julia code FastHankelTransform.jl at https://github.com/pbeckman/FastHankelTransform.jl and then generalized to allow for vectorization.
 
 ## Project Structure
 
-The project consists of the following files and directories:
+- **src/** — C implementation and test harness
+  - `fast_hankel_nufht.c` / `fast_hankel_nufht.h`: NUFHT core and public API
+  - `expansions.c` / `expansions.h`, `bounds.c` / `bounds.h`: supporting routines
+  - `test_nufht.c`: demonstration program using batched `nufht_batch()`
+- **python/** — Python extension and build scripts
+  - `setup.py`: builds the `_pynufht` extension
+  - `run_pynufht_test.py`: example Python test
+- **data/** — Gauss–Legendre points and cached tables
+- **notebooks/** — example notebooks using the Python wrapper
+- **Makefile** — build rules for the C demo
 
-- **src/**: Contains the source code files for the NUFHT implementation.
-  - `axifresnel_jan13.c`: Implements the parallel evaluation of the Fresnel-type integral using NUFHT.
-  - `fast_hankel_nufht.c`: Contains the main algorithm for the NUFHT, including setup and execution functions.
-  - `fast_hankel_nufht.h`: Header file declaring functions and data structures for NUFHT operations.
-  - `expansions.c`: Implements various expansion techniques used in the NUFHT.
-  - `expansions.h`: Header file declaring functions and data structures for expansion techniques.
-  - `bounds.c`: Manages tolerance and nu lookup tables for the NUFHT.
-  - `bounds.h`: Header file declaring functions and data structures for bounds management.
+## Build and run the C demo
 
-- **data/**: Contains Gauss-Legendre point files used for numerical integration.
-  - `gl1000`, `gl2000`, `gl3000`, `gl4000`, `gl5000`, `gl6000`, `gl7000`, `gl8000`, `gl9000`, `gl10000`: Each file contains corresponding Gauss-Legendre points and weights.
-  - `nufht_tables.cache`: contains numbers used by the nufht.  The code will re-generate it if it is not found.
+The C demo is built as `test_nufht` from [src/test_nufht.c](src/test_nufht.c) and the core library sources.
 
-- **Makefile**: Contains build instructions for compiling the C files into an executable, specifying compiler options and dependencies.
+1) Build:
 
-## Usage Instructions
+```
+make
+```
 
-1. **Build the Project**: Navigate to the project directory and run the following command to compile the source code:
-   ```
-   make
-   ```
+2) Run with defaults:
 
-   You will probably need to specify the proper include/library paths for fftw, gsl, openmp, and finufft
+```
+./test_nufht
+```
 
-   The potential is given as psi_x in compute_cj() om axifresnel_jan13.c.
+3) Run with explicit arguments:
 
-   The executable file is currently axifresnel
+```
+./test_nufht <gl_file> <Nk> <kmax> <rmax>
+```
 
-2. **Run the Program**: After building, execute the program to compute the Fresnel integral:
-   ```
-   make run
-   ```
+Example:
 
-3. **Output**: The results will be written to `axifresnel.out`, containing the computed values of the Fresnel integral.
+```
+./test_nufht data/gl10000 200 10 50
+```
+
+## Python wrapper
+
+The Python wrapper builds a `_pynufht` extension in the **python/** directory.
+
+1) Build the extension in-place:
+
+```
+cd python
+python setup.py build_ext --inplace
+```
+
+2) Use it from Python (from the repository root or notebooks/):
+
+```
+import sys, os
+sys.path.insert(0, os.path.abspath("python"))
+import _pynufht as pn
+
+# Example usage: pn.nufht_batch(nu, r_nodes, cs_batch, k_grid, tol=1e-8)
+```
+
+3) Run the included Python test:
+
+```
+python python/run_pynufht_test.py
+```
 
 ## Dependencies
 
-This project relies on the following libraries:
-- **GSL**: For Bessel function evaluations.
-- **FINUFFT**: For efficient nonuniform FFT computations.
-- **FFTW**:  called by FINUFFT
+**C:**
+- FINUFFT
+- FFTW (used by FINUFFT)
+- GSL
+- OpenMP (for parallel builds)
 
-Ensure that these libraries are installed and properly linked in the Makefile.
+Set include/library paths in the Makefile as needed for your system.
 
-## Contribution
+**Python:**
+- Python development headers
+- NumPy (build and runtime)
 
-Contributions to this project are welcome. Please fork the repository and submit a pull request for any changes or improvements.
+## Notes
+
+- The batched API `nufht_batch()` runs multiple input columns for a single Hankel order $\nu$ on a shared grid.
+- For multiple $\nu$ values, create separate plans and call `nufht_batch()` per $\nu$.
+
+## Portability notes
+
+To build on different systems, the Makefile now prefers `pkg-config` for FINUFFT, FFTW, and GSL. If `pkg-config` is not available or the packages are not discoverable, set the paths explicitly:
+
+```
+make FINUFFT_INC=/path/to/finufft/include FINUFFT_LIBDIR=/path/to/finufft/lib \
+  FFTW_LIBDIR=/path/to/fftw/lib GSL_INC=/path/to/gsl/include GSL_LIBDIR=/path/to/gsl/lib
+```
+
+OpenMP flags vary by platform:
+
+- **Linux (GCC/Clang):** `-fopenmp` typically works.
+- **macOS (Homebrew libomp):** set `OMP_LIBDIR` and use `-lomp`.
+- **Windows (MSVC):** use `/openmp` and adjust the Makefile or build with a Visual Studio project/CMake.
+
+If you prefer a cross-platform generator, consider adding a CMake build that handles compiler and OpenMP differences automatically.
 
 ## License
 
-This project is licensed under the MIT License. See the LICENSE file for more details.
+MIT License. See LICENSE for details.
