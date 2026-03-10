@@ -110,6 +110,8 @@ OpenMP flags vary by platform:
 
 If you prefer a cross-platform generator, consider adding a CMake build that handles compiler and OpenMP differences automatically.
 
+More suggestions about finding the required libraries is provided in README2.md
+
 ## License
 
 MIT License. See LICENSE for details.
