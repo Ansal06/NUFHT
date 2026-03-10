@@ -6,6 +6,8 @@ This project provides a C implementation of a batched Nonuniform Fast Hankel Tra
 
 The NUFHT algorithm is from "A nonuniform fast Hankel transform," by Paul G. Beckman and Michael O'Neil [arXiv:2411.09583].  The C code is translated from their Julia code FastHankelTransform.jl at https://github.com/pbeckman/FastHankelTransform.jl and then generalized to allow for vectorization.
 
+Simple installation instructions are provided below, but more detailed instructions---especially for running on HPC clusters---is included in README2.MD.
+
 ## Project Structure
 
 - **src/** — C implementation and test harness
